@@ -1,182 +1,196 @@
 /**
  * SysEx parser: Uint8Array → CircuitTracksPatch
  *
- * Parses the 340-byte data payload from a Circuit Tracks patch dump SysEx message.
- * Full implementation in Phase 1 — this stub establishes the interface and structure.
+ * Parses the full 350-byte Circuit Tracks SysEx message or the 340-byte
+ * data payload. No 7-bit unpacking required.
  */
 
-import { OFFSETS } from "../parameters/offsets.js";
-import type { CircuitTracksPatch, MacroParams, ModMatrixSlot } from "../types/patch.js";
-import { CIRCUIT_TRACKS_HEADER, MessageType, PATCH_DATA_LENGTH } from "./constants.js";
+import * as O from "../parameters/offsets.js";
+import type {
+  CircuitTracksPatch,
+  EnvelopeParams,
+  LfoFadeMode,
+  LfoFlags,
+  LfoParams,
+  MacroKnob,
+  MacroRange,
+  ModMatrixDestination,
+  ModMatrixSlot,
+  ModMatrixSource,
+  OscParams,
+} from "../types/patch.js";
+import {
+  CIRCUIT_ORIGINAL_PRODUCT_ID,
+  CIRCUIT_TRACKS_HEADER,
+  CIRCUIT_TRACKS_PRODUCT_ID,
+  PATCH_DATA_LENGTH,
+  PATCH_DATA_OFFSET,
+  SYSEX_END,
+  SYSEX_START,
+  SysExCommand,
+} from "./constants.js";
 import { defaultPatch } from "./defaults.js";
 
 // ---------------------------------------------------------------------------
-// Validation helpers
+// Error type
 // ---------------------------------------------------------------------------
 
 export class SysExParseError extends Error {
-  constructor(message: string) {
-    super(`SysEx parse error: ${message}`);
+  constructor(msg: string) {
+    super(`SysEx parse error: ${msg}`);
     this.name = "SysExParseError";
   }
 }
 
-/** Verify the 5-byte Circuit Tracks header is present */
-function validateHeader(bytes: Uint8Array): void {
-  if (bytes.length < CIRCUIT_TRACKS_HEADER.length) {
-    throw new SysExParseError("Message too short to contain Circuit Tracks header");
-  }
-  for (let i = 0; i < CIRCUIT_TRACKS_HEADER.length; i++) {
-    if (bytes[i] !== CIRCUIT_TRACKS_HEADER[i]) {
-      throw new SysExParseError(
-        `Header mismatch at byte ${i}: expected 0x${CIRCUIT_TRACKS_HEADER[i]?.toString(16)}, got 0x${bytes[i]?.toString(16)}`
-      );
-    }
-  }
-}
+// ---------------------------------------------------------------------------
+// Full message parsing
+// ---------------------------------------------------------------------------
 
-/** Extract and validate the data payload from a full SysEx message */
-export function extractPayload(sysexMessage: Uint8Array): {
-  messageType: number;
-  synth: number;
+/** Parse a complete 350-byte SysEx buffer */
+export function parsePatchSysEx(bytes: Uint8Array): {
+  patch: CircuitTracksPatch;
+  synth: 1 | 2;
   slot: number;
-  data: Uint8Array;
+  command: number;
 } {
-  validateHeader(sysexMessage);
+  if (bytes[0] !== SYSEX_START) {
+    throw new SysExParseError(`Expected F0, got 0x${bytes[0]?.toString(16)}`);
+  }
+  if (bytes[bytes.length - 1] !== SYSEX_END) {
+    throw new SysExParseError("Missing F7 terminator");
+  }
 
-  const messageType = sysexMessage[5];
-  if (messageType === undefined) throw new SysExParseError("Missing message type byte");
+  // Validate manufacturer ID and product type
+  if (
+    bytes[1] !== CIRCUIT_TRACKS_HEADER[1] ||
+    bytes[2] !== CIRCUIT_TRACKS_HEADER[2] ||
+    bytes[3] !== CIRCUIT_TRACKS_HEADER[3] ||
+    bytes[4] !== CIRCUIT_TRACKS_HEADER[4]
+  ) {
+    throw new SysExParseError("Manufacturer ID or product type mismatch");
+  }
 
-  const synth = sysexMessage[6];
-  if (synth === undefined) throw new SysExParseError("Missing synth index byte");
+  const prodId = bytes[5];
+  if (prodId !== CIRCUIT_TRACKS_PRODUCT_ID && prodId !== CIRCUIT_ORIGINAL_PRODUCT_ID) {
+    throw new SysExParseError(
+      `Unknown product ID 0x${prodId?.toString(16)} — expected 0x${CIRCUIT_TRACKS_PRODUCT_ID.toString(16)} (Circuit Tracks) or 0x${CIRCUIT_ORIGINAL_PRODUCT_ID.toString(16)} (Circuit Original)`
+    );
+  }
 
-  const slot = sysexMessage[7];
-  if (slot === undefined) throw new SysExParseError("Missing slot byte");
+  const command = bytes[6] ?? 0;
+  if (command !== SysExCommand.REPLACE_CURRENT_PATCH && command !== SysExCommand.REPLACE_PATCH) {
+    throw new SysExParseError(
+      `Unexpected command 0x${command.toString(16)} — this is not a patch dump message`
+    );
+  }
 
-  // Data starts at byte 8, ends before the final F7
-  const data = sysexMessage.slice(8, sysexMessage.length - 1);
+  const location = bytes[7] ?? 0;
+  const synth: 1 | 2 = location === 0 ? 1 : 2;
 
+  // For REPLACE_PATCH, the location byte encodes the slot number
+  const slot = command === SysExCommand.REPLACE_PATCH ? location : 0;
+
+  const data = bytes.slice(PATCH_DATA_OFFSET, PATCH_DATA_OFFSET + PATCH_DATA_LENGTH);
   if (data.length !== PATCH_DATA_LENGTH) {
     throw new SysExParseError(`Expected ${PATCH_DATA_LENGTH} data bytes, got ${data.length}`);
   }
 
-  return { messageType: messageType as number, synth: synth as number, slot: slot as number, data };
+  return { patch: parsePayload(data), synth, slot, command };
 }
 
 // ---------------------------------------------------------------------------
-// Main parser
+// Payload parser — exported for unit testing without SysEx framing
 // ---------------------------------------------------------------------------
 
-/**
- * Parse a full patch dump SysEx message into a typed CircuitTracksPatch.
- *
- * @param sysexMessage - Complete SysEx bytes including F0 header and F7 terminator
- */
-export function parsePatchSysEx(sysexMessage: Uint8Array): {
-  patch: CircuitTracksPatch;
-  synth: 1 | 2;
-  slot: number;
-} {
-  const { messageType, synth, slot, data } = extractPayload(sysexMessage);
-
-  if (
-    messageType !== MessageType.REPLACE_CURRENT_PATCH &&
-    messageType !== MessageType.REPLACE_PATCH
-  ) {
-    throw new SysExParseError(
-      `Unexpected message type 0x${messageType.toString(16)} — expected patch dump`
-    );
-  }
-
-  const patch = parsePayload(data);
-  return { patch, synth: synth === 0 ? 1 : 2, slot };
-}
-
-/**
- * Parse the raw 340-byte payload into a CircuitTracksPatch.
- * Exported for testing without SysEx framing.
- */
-export function parsePayload(data: Uint8Array): CircuitTracksPatch {
+export function parsePayload(d: Uint8Array): CircuitTracksPatch {
   const patch = defaultPatch();
 
-  // Name (15 ASCII bytes, strip nulls)
-  const nameBytes = data.slice(OFFSETS.NAME_START, OFFSETS.NAME_START + OFFSETS.NAME_LENGTH);
-  patch.name = Array.from(nameBytes)
-    .map((b) => (b > 0 ? String.fromCharCode(b) : ""))
-    .join("")
-    .trimEnd();
+  // --- Meta ---
+  const nameEnd = findNameEnd(d, O.NAME_START, O.NAME_LENGTH);
+  patch.name = new TextDecoder().decode(d.slice(O.NAME_START, nameEnd)).trimEnd();
+  patch.category = d[O.CATEGORY] ?? 0;
+  patch.genre = d[O.GENRE] ?? 0;
 
-  // Voice
-  patch.voice.polyphonyMode = clamp(data[OFFSETS.VOICE_POLYPHONY_MODE] ?? 0, 0, 2) as 0 | 1 | 2;
-  patch.voice.portamentoTime = clamp(data[OFFSETS.VOICE_PORTAMENTO_TIME] ?? 0, 0, 127);
-  patch.voice.preGlide = clamp(data[OFFSETS.VOICE_PRE_GLIDE] ?? 0, 0, 127);
-  patch.voice.keyboardOctave = clamp(data[OFFSETS.VOICE_KEYBOARD_OCTAVE] ?? 2, 0, 4);
+  // --- Voice ---
+  patch.voice.polyphonyMode = clamp(d[O.VOICE_POLYPHONY_MODE] ?? 0, 0, 2) as 0 | 1 | 2;
+  patch.voice.portamentoRate = clamp(d[O.VOICE_PORTAMENTO_RATE] ?? 0, 0, 127);
+  patch.voice.preGlide = clamp(d[O.VOICE_PRE_GLIDE] ?? 0, 0, 127);
+  patch.voice.keyboardOctave = clamp(d[O.VOICE_KEYBOARD_OCTAVE] ?? 2, 0, 4);
 
-  // Oscillator 1
-  patch.oscillator1 = parseOscillator(data, OFFSETS.OSC1_WAVEFORM);
+  // --- Oscillators ---
+  patch.oscillator1 = parseOsc(d, O.OSC1_START);
+  patch.oscillator2 = parseOsc(d, O.OSC2_START);
 
-  // Oscillator 2
-  patch.oscillator2 = parseOscillator(data, OFFSETS.OSC2_WAVEFORM);
+  // --- Mixer ---
+  patch.mixer.osc1Level = clamp(d[O.MIXER_OSC1_LEVEL] ?? 100, 0, 127);
+  patch.mixer.osc2Level = clamp(d[O.MIXER_OSC2_LEVEL] ?? 0, 0, 127);
+  patch.mixer.ringModLevel = clamp(d[O.MIXER_RING_MOD_LEVEL] ?? 0, 0, 127);
+  patch.mixer.noiseLevel = clamp(d[O.MIXER_NOISE_LEVEL] ?? 0, 0, 127);
+  patch.mixer.preFxLevel = clamp(d[O.MIXER_PRE_FX_LEVEL] ?? 100, 0, 127);
+  patch.mixer.postFxLevel = clamp(d[O.MIXER_POST_FX_LEVEL] ?? 100, 0, 127);
 
-  // Mixer
-  patch.oscMix = clamp(data[OFFSETS.MIX_OSC_BALANCE] ?? 0, 0, 127);
-  patch.noiseLevel = clamp(data[OFFSETS.MIX_NOISE_LEVEL] ?? 0, 0, 127);
-  patch.ringModLevel = clamp(data[OFFSETS.MIX_RING_MOD_LEVEL] ?? 0, 0, 127);
+  // --- Filter ---
+  patch.filter.routing = clamp(d[O.FILTER_ROUTING] ?? 0, 0, 1);
+  patch.filter.drive = clamp(d[O.FILTER_DRIVE] ?? 0, 0, 127);
+  patch.filter.driveType = clamp(d[O.FILTER_DRIVE_TYPE] ?? 0, 0, 6) as 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  patch.filter.type = clamp(d[O.FILTER_TYPE] ?? 0, 0, 5) as 0 | 1 | 2 | 3 | 4 | 5;
+  patch.filter.frequency = clamp(d[O.FILTER_FREQUENCY] ?? 127, 0, 127);
+  patch.filter.track = clamp(d[O.FILTER_TRACK] ?? 0, 0, 127);
+  patch.filter.resonance = clamp(d[O.FILTER_RESONANCE] ?? 0, 0, 127);
+  patch.filter.qNormalise = clamp(d[O.FILTER_Q_NORMALISE] ?? 0, 0, 127);
+  patch.filter.env2ToFreq = clamp(d[O.FILTER_ENV2_TO_FREQ] ?? 64, 0, 127);
 
-  // Filter
-  patch.filter.type = clamp(data[OFFSETS.FILTER_TYPE] ?? 0, 0, 5) as 0 | 1 | 2 | 3 | 4 | 5;
-  patch.filter.cutoff = clamp(data[OFFSETS.FILTER_CUTOFF] ?? 127, 0, 127);
-  patch.filter.resonance = clamp(data[OFFSETS.FILTER_RESONANCE] ?? 0, 0, 127);
-  patch.filter.drive = clamp(data[OFFSETS.FILTER_DRIVE] ?? 0, 0, 127);
-  patch.filter.envDepth = clamp(data[OFFSETS.FILTER_ENV_DEPTH] ?? 64, 0, 127);
-  patch.filter.keyTracking = clamp(data[OFFSETS.FILTER_KEY_TRACKING] ?? 0, 0, 127);
-  patch.filter.velocitySensitivity = clamp(data[OFFSETS.FILTER_VELOCITY] ?? 0, 0, 127);
+  // --- Envelopes ---
+  patch.envelope1 = parseEnv(d, O.ENV1_START);
+  patch.envelope2 = parseEnv(d, O.ENV2_START);
+  patch.envelope3 = parseEnv(d, O.ENV3_START);
 
-  // Envelopes
-  patch.envelope1 = parseEnvelope(data, OFFSETS.ENV1_ATTACK);
-  patch.envelope2 = parseEnvelope(data, OFFSETS.ENV2_ATTACK);
-  patch.envelope3 = parseEnvelope(data, OFFSETS.ENV3_ATTACK);
+  // --- LFOs ---
+  patch.lfo1 = parseLfo(d, O.LFO1_START);
+  patch.lfo2 = parseLfo(d, O.LFO2_START);
 
-  // LFOs
-  patch.lfo1 = parseLfo(data, OFFSETS.LFO1_WAVEFORM);
-  patch.lfo2 = parseLfo(data, OFFSETS.LFO2_WAVEFORM);
+  // --- FX ---
+  patch.fx.distortionLevel = clamp(d[O.FX_DIST_LEVEL] ?? 0, 0, 127);
+  patch.fx.chorusLevel = clamp(d[O.FX_CHORUS_LEVEL] ?? 0, 0, 127);
+  patch.fx.eqBassFrequency = clamp(d[O.FX_EQ_BASS_FREQ] ?? 64, 0, 127);
+  patch.fx.eqBassLevel = clamp(d[O.FX_EQ_BASS_LEVEL] ?? 64, 0, 127);
+  patch.fx.eqMidFrequency = clamp(d[O.FX_EQ_MID_FREQ] ?? 64, 0, 127);
+  patch.fx.eqMidLevel = clamp(d[O.FX_EQ_MID_LEVEL] ?? 64, 0, 127);
+  patch.fx.eqTrebleFrequency = clamp(d[O.FX_EQ_TREBLE_FREQ] ?? 64, 0, 127);
+  patch.fx.eqTrebleLevel = clamp(d[O.FX_EQ_TREBLE_LEVEL] ?? 64, 0, 127);
+  patch.fx.distortionType = clamp(d[O.FX_DIST_TYPE] ?? 0, 0, 6) as 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  patch.fx.distortionCompensation = clamp(d[O.FX_DIST_COMPENSATION] ?? 0, 0, 127);
+  patch.fx.chorusType = clamp(d[O.FX_CHORUS_TYPE] ?? 0, 0, 127);
+  patch.fx.chorusRate = clamp(d[O.FX_CHORUS_RATE] ?? 64, 0, 127);
+  patch.fx.chorusRateSync = clamp(d[O.FX_CHORUS_RATE_SYNC] ?? 0, 0, 127);
+  patch.fx.chorusFeedback = clamp(d[O.FX_CHORUS_FEEDBACK] ?? 0, 0, 127);
+  patch.fx.chorusModDepth = clamp(d[O.FX_CHORUS_MOD_DEPTH] ?? 0, 0, 127);
+  patch.fx.chorusDelay = clamp(d[O.FX_CHORUS_DELAY] ?? 0, 0, 127);
 
-  // Modulation matrix
-  for (let i = 0; i < OFFSETS.MOD_MATRIX_SLOTS; i++) {
-    const base = OFFSETS.MOD_MATRIX_START + i * OFFSETS.MOD_SLOT_STRIDE;
+  // --- Mod matrix ---
+  for (let i = 0; i < O.MOD_MATRIX_SLOTS; i++) {
+    const base = O.MOD_MATRIX_START + i * O.MOD_MATRIX_STRIDE;
     const slot = patch.modMatrix[i] as ModMatrixSlot;
-    slot.source = modSourceFromByte(data[base] ?? 0);
-    slot.destination = modDestFromByte(data[base + 1] ?? 0);
-    slot.depth = clamp(data[base + 2] ?? 64, 0, 127);
+    slot.source1 = (d[base + O.MOD_SLOT_SOURCE1] ?? 0) as ModMatrixSource;
+    slot.source2 = (d[base + O.MOD_SLOT_SOURCE2] ?? 0) as ModMatrixSource;
+    slot.depth = clamp(d[base + O.MOD_SLOT_DEPTH] ?? 0, 0, 127);
+    slot.destination = clamp(d[base + O.MOD_SLOT_DESTINATION] ?? 0, 0, 17) as ModMatrixDestination;
   }
 
-  // Macros (simplified — full decode in Phase 1)
-  for (let i = 0; i < OFFSETS.MACRO_SLOTS; i++) {
-    const base = OFFSETS.MACRO_START + i * OFFSETS.MACRO_STRIDE;
-    const macro = patch.macros[i] as MacroParams;
-    macro.value = clamp(data[base] ?? 64, 0, 127);
+  // --- Macro knobs ---
+  for (let i = 0; i < O.MACRO_SLOTS; i++) {
+    const base = O.MACRO_START + i * O.MACRO_STRIDE;
+    const macro = patch.macroKnobs[i] as MacroKnob;
+    macro.position = clamp(d[base] ?? 64, 0, 127);
+    for (let r = 0; r < O.MACRO_RANGES_PER_KNOB; r++) {
+      const rb = base + 1 + r * O.MACRO_RANGE_STRIDE;
+      const range = macro.ranges[r] as MacroRange;
+      range.destination = clamp(d[rb + O.RANGE_DESTINATION] ?? 0, 0, 70);
+      range.startPos = clamp(d[rb + O.RANGE_START_POS] ?? 0, 0, 127);
+      range.endPos = clamp(d[rb + O.RANGE_END_POS] ?? 127, 0, 127);
+      range.depth = clamp(d[rb + O.RANGE_DEPTH] ?? 64, 0, 127);
+    }
   }
-
-  // Arp
-  patch.arp.enabled = ((data[OFFSETS.ARP_ENABLED] ?? 0) > 0 ? 1 : 0) as 0 | 1;
-  patch.arp.rate = clamp(data[OFFSETS.ARP_RATE] ?? 2, 0, 8);
-  patch.arp.gate = clamp(data[OFFSETS.ARP_GATE] ?? 64, 0, 127);
-  patch.arp.octaveRange = clamp(data[OFFSETS.ARP_OCTAVE_RANGE] ?? 1, 1, 4);
-  patch.arp.pattern = clamp(data[OFFSETS.ARP_PATTERN] ?? 0, 0, 4);
-
-  // Effects
-  patch.effects.distortion.position = (data[OFFSETS.FX_DIST_POSITION] ?? 0) as 0 | 1;
-  patch.effects.distortion.type = clamp(data[OFFSETS.FX_DIST_TYPE] ?? 0, 0, 5);
-  patch.effects.distortion.drive = clamp(data[OFFSETS.FX_DIST_DRIVE] ?? 0, 0, 127);
-  patch.effects.distortion.level = clamp(data[OFFSETS.FX_DIST_LEVEL] ?? 0, 0, 127);
-  patch.effects.chorus.rate = clamp(data[OFFSETS.FX_CHORUS_RATE] ?? 64, 0, 127);
-  patch.effects.chorus.depth = clamp(data[OFFSETS.FX_CHORUS_DEPTH] ?? 0, 0, 127);
-  patch.effects.chorus.feedback = clamp(data[OFFSETS.FX_CHORUS_FEEDBACK] ?? 0, 0, 127);
-  patch.effects.chorus.level = clamp(data[OFFSETS.FX_CHORUS_LEVEL] ?? 0, 0, 127);
-  patch.effects.reverb.size = clamp(data[OFFSETS.FX_REVERB_SIZE] ?? 64, 0, 127);
-  patch.effects.reverb.decay = clamp(data[OFFSETS.FX_REVERB_DECAY] ?? 64, 0, 127);
-  patch.effects.reverb.filter = clamp(data[OFFSETS.FX_REVERB_FILTER] ?? 64, 0, 127);
-  patch.effects.reverb.level = clamp(data[OFFSETS.FX_REVERB_LEVEL] ?? 0, 0, 127);
 
   return patch;
 }
@@ -185,115 +199,66 @@ export function parsePayload(data: Uint8Array): CircuitTracksPatch {
 // Sub-parsers
 // ---------------------------------------------------------------------------
 
-function parseOscillator(data: Uint8Array, base: number) {
+function parseOsc(d: Uint8Array, base: number): OscParams {
   return {
-    waveform: clamp(data[base] ?? 2, 0, 8) as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8,
-    coarse: clamp(data[base + 1] ?? 24, 0, 96),
-    fine: clamp(data[base + 2] ?? 50, 0, 100),
-    level: clamp(data[base + 3] ?? 100, 0, 127),
-    pulseWidth: clamp(data[base + 4] ?? 64, 0, 127),
-    virtualSync: clamp(data[base + 5] ?? 0, 0, 127),
-    density: clamp(data[base + 6] ?? 0, 0, 127),
-    densityDetune: clamp(data[base + 7] ?? 0, 0, 127),
-    pitchEnvDepth: clamp(data[base + 8] ?? 64, 0, 127),
+    wave: clamp(d[base + 0] ?? 2, 0, 29) as OscParams["wave"],
+    waveInterpolate: clamp(d[base + 1] ?? 0, 0, 127),
+    pulseWidthIndex: clamp(d[base + 2] ?? 64, 0, 127),
+    virtualSyncDepth: clamp(d[base + 3] ?? 0, 0, 127),
+    density: clamp(d[base + 4] ?? 0, 0, 127),
+    densityDetune: clamp(d[base + 5] ?? 0, 0, 127),
+    semitones: clamp(d[base + 6] ?? 64, 0, 127),
+    cents: clamp(d[base + 7] ?? 64, 0, 127),
+    pitchBend: clamp(d[base + 8] ?? 64, 0, 127),
   };
 }
 
-function parseEnvelope(data: Uint8Array, base: number) {
+function parseEnv(d: Uint8Array, base: number): EnvelopeParams {
   return {
-    attack: clamp(data[base] ?? 0, 0, 127),
-    decay: clamp(data[base + 1] ?? 64, 0, 127),
-    sustain: clamp(data[base + 2] ?? 80, 0, 127),
-    release: clamp(data[base + 3] ?? 32, 0, 127),
-    velocityDepth: clamp(data[base + 4] ?? 64, 0, 127),
-    loop: ((data[base + 5] ?? 0) > 0 ? 1 : 0) as 0 | 1,
+    velocityOrDelay: clamp(d[base + 0] ?? 0, 0, 127),
+    attack: clamp(d[base + 1] ?? 0, 0, 127),
+    decay: clamp(d[base + 2] ?? 64, 0, 127),
+    sustain: clamp(d[base + 3] ?? 80, 0, 127),
+    release: clamp(d[base + 4] ?? 32, 0, 127),
   };
 }
 
-function parseLfo(data: Uint8Array, base: number) {
+function parseLfo(d: Uint8Array, base: number): LfoParams {
   return {
-    waveform: clamp(data[base] ?? 0, 0, 6) as 0 | 1 | 2 | 3 | 4 | 5 | 6,
-    rate: clamp(data[base + 1] ?? 64, 0, 127),
-    sync: ((data[base + 2] ?? 0) > 0 ? 1 : 0) as 0 | 1,
-    syncRate: clamp(data[base + 3] ?? 2, 0, 7),
-    phase: clamp(data[base + 4] ?? 0, 0, 127),
-    slew: clamp(data[base + 5] ?? 0, 0, 127),
-    oneShot: ((data[base + 6] ?? 0) > 0 ? 1 : 0) as 0 | 1,
+    waveform: clamp(d[base + 0] ?? 0, 0, 37) as LfoParams["waveform"],
+    phaseOffset: clamp(d[base + 1] ?? 0, 0, 127),
+    slewRate: clamp(d[base + 2] ?? 0, 0, 127),
+    delay: clamp(d[base + 3] ?? 0, 0, 127),
+    delaySync: clamp(d[base + 4] ?? 0, 0, 127),
+    rate: clamp(d[base + 5] ?? 64, 0, 127),
+    rateSync: clamp(d[base + 6] ?? 0, 0, 127),
+    flags: parseLfoFlags(d[base + 7] ?? 0),
   };
 }
 
-// ---------------------------------------------------------------------------
-// Enum lookups (TODO: fill from Programmer's Reference byte values)
-// ---------------------------------------------------------------------------
-
-import type { ModDestination, ModSource } from "../types/patch.js";
-
-const MOD_SOURCES: ModSource[] = [
-  "none",
-  "env1",
-  "env2",
-  "env3",
-  "lfo1",
-  "lfo2",
-  "macro1",
-  "macro2",
-  "macro3",
-  "macro4",
-  "macro5",
-  "macro6",
-  "macro7",
-  "macro8",
-  "velocity",
-  "aftertouch",
-  "modWheel",
-  "pitchBend",
-];
-
-const MOD_DESTINATIONS: ModDestination[] = [
-  "none",
-  "osc1Pitch",
-  "osc1PulseWidth",
-  "osc1Level",
-  "osc2Pitch",
-  "osc2PulseWidth",
-  "osc2Level",
-  "oscMix",
-  "noiseMix",
-  "ringModMix",
-  "filterCutoff",
-  "filterResonance",
-  "filterDrive",
-  "env1Attack",
-  "env1Decay",
-  "env1Sustain",
-  "env1Release",
-  "env2Attack",
-  "env2Decay",
-  "env2Sustain",
-  "env2Release",
-  "env3Attack",
-  "env3Decay",
-  "env3Sustain",
-  "env3Release",
-  "lfo1Rate",
-  "lfo2Rate",
-  "distortionLevel",
-  "chorusLevel",
-  "reverbLevel",
-];
-
-function modSourceFromByte(b: number): ModSource {
-  return MOD_SOURCES[b] ?? "none";
-}
-
-function modDestFromByte(b: number): ModDestination {
-  return MOD_DESTINATIONS[b] ?? "none";
+function parseLfoFlags(b: number): LfoFlags {
+  return {
+    oneShot: (b & 0x01) !== 0,
+    keySync: (b & 0x02) !== 0,
+    commonSync: (b & 0x04) !== 0,
+    delayTrigger: (b & 0x08) !== 0,
+    fadeMode: ((b >> 4) & 0x0f) as LfoFadeMode,
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
 
-function clamp(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
+/** Find the length of the actual name content (trim trailing spaces/nulls) */
+function findNameEnd(d: Uint8Array, start: number, maxLen: number): number {
+  let end = start + maxLen;
+  while (end > start && (d[end - 1] === 0x20 || d[end - 1] === 0x00)) {
+    end--;
+  }
+  return end;
+}
+
+function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
 }

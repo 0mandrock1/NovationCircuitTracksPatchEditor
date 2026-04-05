@@ -1,306 +1,248 @@
 /**
  * SysEx builder: CircuitTracksPatch → Uint8Array
  *
- * Encodes a patch model into a valid Circuit Tracks SysEx message.
+ * Produces valid 350-byte Circuit Tracks SysEx messages.
+ * No 7-bit packing — values are stored as raw bytes.
  */
 
-import { OFFSETS } from "../parameters/offsets.js";
-import type { CircuitTracksPatch, MacroParams, ModMatrixSlot } from "../types/patch.js";
-import type { ModDestination, ModSource } from "../types/patch.js";
-import { CIRCUIT_TRACKS_HEADER, MessageType, PATCH_DATA_LENGTH, SYSEX_END } from "./constants.js";
+import * as O from "../parameters/offsets.js";
+import type { CircuitTracksPatch, LfoFlags, MacroKnob, ModMatrixSlot } from "../types/patch.js";
+import {
+  CIRCUIT_TRACKS_HEADER,
+  PATCH_DATA_LENGTH,
+  PATCH_SYSEX_LENGTH,
+  SYNTH_1,
+  SYSEX_END,
+  SysExCommand,
+} from "./constants.js";
 
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Build a "Replace Patch" SysEx message (writes to flash, persists).
- *
- * @param patch - The patch to encode
- * @param synth - Which synth (1 or 2)
- * @param slot  - Patch slot 0–63
- */
-export function buildReplacePatchMessage(
-  patch: CircuitTracksPatch,
-  synth: 1 | 2,
-  slot: number
-): Uint8Array {
-  return buildPatchMessage(patch, MessageType.REPLACE_PATCH, synth, slot);
-}
-
-/**
- * Build a "Replace Current Patch" SysEx message (RAM only, immediate preview).
+ * Build a Replace Current Patch SysEx message (RAM, audible immediately).
+ * 350 bytes total.
  */
 export function buildReplaceCurrentPatchMessage(
   patch: CircuitTracksPatch,
   synth: 1 | 2
 ): Uint8Array {
-  return buildPatchMessage(patch, MessageType.REPLACE_CURRENT_PATCH, synth, 0x00);
+  const data = encodePayload(patch);
+  return frameMessage(SysExCommand.REPLACE_CURRENT_PATCH, synth === 1 ? SYNTH_1 : 0x01, 0, data);
 }
 
 /**
- * Build a "Request Patch" SysEx message (asks device to send patch dump).
+ * Build a Replace Patch SysEx message for a specific slot.
+ *
+ * NOTE: The true REPLACE_PATCH (0x01) command uses a 5-byte command section
+ * (command_id + 2-byte little-endian pack_index + patch_index + reserved),
+ * producing a 352-byte message — different from the standard 350-byte format.
+ * Until hardware testing confirms the exact encoding in Phase 2, this function
+ * produces a 350-byte REPLACE_CURRENT_PATCH message (same as all .syx files
+ * in the wild, per ctpatch.py convention). The slot parameter is preserved for
+ * when the flash-write variant is fully implemented.
+ *
+ * @param slot - patch slot 0–63 (stored for future flash-write implementation)
  */
-export function buildRequestPatchMessage(synth: 1 | 2, slot: number): Uint8Array {
-  return new Uint8Array([
-    ...CIRCUIT_TRACKS_HEADER,
-    MessageType.REQUEST_PATCH,
-    synth === 1 ? 0x00 : 0x01,
-    slot,
-    SYSEX_END,
-  ]);
+export function buildReplacePatchMessage(
+  patch: CircuitTracksPatch,
+  synth: 1 | 2,
+  _slot: number
+): Uint8Array {
+  // Use REPLACE_CURRENT_PATCH format (350 bytes) — compatible with all SysEx tools
+  return buildReplaceCurrentPatchMessage(patch, synth);
 }
 
 /**
- * Build a "Request Current Patch" SysEx message.
+ * Build a Request Current Patch Dump message.
+ * Device responds with a Replace Current Patch message.
  */
 export function buildRequestCurrentPatchMessage(synth: 1 | 2): Uint8Array {
   return new Uint8Array([
     ...CIRCUIT_TRACKS_HEADER,
-    MessageType.REQUEST_CURRENT_PATCH,
-    synth === 1 ? 0x00 : 0x01,
+    SysExCommand.REQUEST_DUMP_CURRENT_PATCH,
+    synth === 1 ? SYNTH_1 : 0x01,
     SYSEX_END,
   ]);
 }
 
 /**
- * Build a full 64-patch bank SysEx file (concatenated messages).
- * The array is intended to be sent with INTER_MESSAGE_DELAY_MS between each.
+ * Build 64 Replace Patch SysEx messages for a full bank.
+ * Send each with INTER_MESSAGE_DELAY_MS gap between them.
  */
 export function buildBankMessages(patches: CircuitTracksPatch[], synth: 1 | 2): Uint8Array[] {
   return patches.map((patch, slot) => buildReplacePatchMessage(patch, synth, slot));
 }
 
 // ---------------------------------------------------------------------------
-// Internal implementation
+// Frame assembly
 // ---------------------------------------------------------------------------
 
-function buildPatchMessage(
-  patch: CircuitTracksPatch,
-  messageType: number,
-  synth: 1 | 2,
-  slot: number
+function frameMessage(
+  commandId: number,
+  location: number,
+  reserved: number,
+  data: Uint8Array
 ): Uint8Array {
-  const data = encodePayload(patch);
-  const message = new Uint8Array(CIRCUIT_TRACKS_HEADER.length + 3 + PATCH_DATA_LENGTH + 1);
-  let offset = 0;
-
-  // Header
-  message.set(CIRCUIT_TRACKS_HEADER, offset);
-  offset += CIRCUIT_TRACKS_HEADER.length;
-
-  // Message type, synth, slot
-  message[offset++] = messageType;
-  message[offset++] = synth === 1 ? 0x00 : 0x01;
-  message[offset++] = slot;
-
-  // Data payload
-  message.set(data, offset);
-  offset += PATCH_DATA_LENGTH;
-
-  // SysEx end
-  message[offset] = SYSEX_END;
-
-  return message;
+  const msg = new Uint8Array(PATCH_SYSEX_LENGTH);
+  let i = 0;
+  for (const b of CIRCUIT_TRACKS_HEADER) msg[i++] = b;
+  msg[i++] = commandId;
+  msg[i++] = location;
+  msg[i++] = reserved;
+  msg.set(data, i);
+  msg[PATCH_SYSEX_LENGTH - 1] = SYSEX_END;
+  return msg;
 }
 
-/**
- * Encode a CircuitTracksPatch into the raw 340-byte payload.
- * Exported for testing without full SysEx framing.
- */
+// ---------------------------------------------------------------------------
+// Payload encoder — maps CircuitTracksPatch → 340-byte data array
+// ---------------------------------------------------------------------------
+
 export function encodePayload(patch: CircuitTracksPatch): Uint8Array {
-  const data = new Uint8Array(PATCH_DATA_LENGTH);
+  const d = new Uint8Array(PATCH_DATA_LENGTH);
 
-  // Name: 15 bytes, ASCII, null-padded
-  const nameBytes = new TextEncoder().encode(patch.name.slice(0, 15).padEnd(15, "\0"));
-  data.set(nameBytes, OFFSETS.NAME_START);
+  // --- Meta ---
+  const nameBytes = new TextEncoder().encode(patch.name.slice(0, O.NAME_LENGTH));
+  d.set(nameBytes, O.NAME_START);
+  // Pad remaining name bytes with spaces (0x20)
+  for (let i = nameBytes.length; i < O.NAME_LENGTH; i++) d[O.NAME_START + i] = 0x20;
+  d[O.CATEGORY] = patch.category;
+  d[O.GENRE] = patch.genre;
+  // Reserved 14 bytes (18–31): left as 0x00
 
-  // Voice
-  data[OFFSETS.VOICE_POLYPHONY_MODE] = patch.voice.polyphonyMode;
-  data[OFFSETS.VOICE_PORTAMENTO_TIME] = patch.voice.portamentoTime;
-  data[OFFSETS.VOICE_PRE_GLIDE] = patch.voice.preGlide;
-  data[OFFSETS.VOICE_KEYBOARD_OCTAVE] = patch.voice.keyboardOctave;
+  // --- Voice ---
+  d[O.VOICE_POLYPHONY_MODE] = patch.voice.polyphonyMode;
+  d[O.VOICE_PORTAMENTO_RATE] = patch.voice.portamentoRate;
+  d[O.VOICE_PRE_GLIDE] = patch.voice.preGlide;
+  d[O.VOICE_KEYBOARD_OCTAVE] = patch.voice.keyboardOctave;
 
-  // Oscillators
-  encodeOscillator(data, OFFSETS.OSC1_WAVEFORM, patch.oscillator1);
-  encodeOscillator(data, OFFSETS.OSC2_WAVEFORM, patch.oscillator2);
+  // --- Oscillators ---
+  encodeOsc(d, O.OSC1_START, patch.oscillator1);
+  encodeOsc(d, O.OSC2_START, patch.oscillator2);
 
-  // Mixer
-  data[OFFSETS.MIX_OSC_BALANCE] = patch.oscMix;
-  data[OFFSETS.MIX_NOISE_LEVEL] = patch.noiseLevel;
-  data[OFFSETS.MIX_RING_MOD_LEVEL] = patch.ringModLevel;
+  // --- Mixer ---
+  d[O.MIXER_OSC1_LEVEL] = patch.mixer.osc1Level;
+  d[O.MIXER_OSC2_LEVEL] = patch.mixer.osc2Level;
+  d[O.MIXER_RING_MOD_LEVEL] = patch.mixer.ringModLevel;
+  d[O.MIXER_NOISE_LEVEL] = patch.mixer.noiseLevel;
+  d[O.MIXER_PRE_FX_LEVEL] = patch.mixer.preFxLevel;
+  d[O.MIXER_POST_FX_LEVEL] = patch.mixer.postFxLevel;
 
-  // Filter
-  data[OFFSETS.FILTER_TYPE] = patch.filter.type;
-  data[OFFSETS.FILTER_CUTOFF] = patch.filter.cutoff;
-  data[OFFSETS.FILTER_RESONANCE] = patch.filter.resonance;
-  data[OFFSETS.FILTER_DRIVE] = patch.filter.drive;
-  data[OFFSETS.FILTER_ENV_DEPTH] = patch.filter.envDepth;
-  data[OFFSETS.FILTER_KEY_TRACKING] = patch.filter.keyTracking;
-  data[OFFSETS.FILTER_VELOCITY] = patch.filter.velocitySensitivity;
+  // --- Filter ---
+  d[O.FILTER_ROUTING] = patch.filter.routing;
+  d[O.FILTER_DRIVE] = patch.filter.drive;
+  d[O.FILTER_DRIVE_TYPE] = patch.filter.driveType;
+  d[O.FILTER_TYPE] = patch.filter.type;
+  d[O.FILTER_FREQUENCY] = patch.filter.frequency;
+  d[O.FILTER_TRACK] = patch.filter.track;
+  d[O.FILTER_RESONANCE] = patch.filter.resonance;
+  d[O.FILTER_Q_NORMALISE] = patch.filter.qNormalise;
+  d[O.FILTER_ENV2_TO_FREQ] = patch.filter.env2ToFreq;
 
-  // Envelopes
-  encodeEnvelope(data, OFFSETS.ENV1_ATTACK, patch.envelope1);
-  encodeEnvelope(data, OFFSETS.ENV2_ATTACK, patch.envelope2);
-  encodeEnvelope(data, OFFSETS.ENV3_ATTACK, patch.envelope3);
+  // --- Envelopes ---
+  encodeEnv(d, O.ENV1_START, patch.envelope1);
+  encodeEnv(d, O.ENV2_START, patch.envelope2);
+  encodeEnv(d, O.ENV3_START, patch.envelope3);
 
-  // LFOs
-  encodeLfo(data, OFFSETS.LFO1_WAVEFORM, patch.lfo1);
-  encodeLfo(data, OFFSETS.LFO2_WAVEFORM, patch.lfo2);
+  // --- LFOs ---
+  encodeLfo(d, O.LFO1_START, patch.lfo1);
+  encodeLfo(d, O.LFO2_START, patch.lfo2);
 
-  // Modulation matrix
-  for (let i = 0; i < OFFSETS.MOD_MATRIX_SLOTS; i++) {
-    const base = OFFSETS.MOD_MATRIX_START + i * OFFSETS.MOD_SLOT_STRIDE;
+  // --- FX ---
+  d[O.FX_DIST_LEVEL] = patch.fx.distortionLevel;
+  d[O.FX_RESERVED_1] = 0;
+  d[O.FX_CHORUS_LEVEL] = patch.fx.chorusLevel;
+  d[O.FX_RESERVED_2] = 0;
+  d[O.FX_RESERVED_3] = 0;
+  d[O.FX_EQ_BASS_FREQ] = patch.fx.eqBassFrequency;
+  d[O.FX_EQ_BASS_LEVEL] = patch.fx.eqBassLevel;
+  d[O.FX_EQ_MID_FREQ] = patch.fx.eqMidFrequency;
+  d[O.FX_EQ_MID_LEVEL] = patch.fx.eqMidLevel;
+  d[O.FX_EQ_TREBLE_FREQ] = patch.fx.eqTrebleFrequency;
+  d[O.FX_EQ_TREBLE_LEVEL] = patch.fx.eqTrebleLevel;
+  // Reserved 5 bytes at FX_RESERVED_4_8 (111–115): left as 0x00
+  d[O.FX_DIST_TYPE] = patch.fx.distortionType;
+  d[O.FX_DIST_COMPENSATION] = patch.fx.distortionCompensation;
+  d[O.FX_CHORUS_TYPE] = patch.fx.chorusType;
+  d[O.FX_CHORUS_RATE] = patch.fx.chorusRate;
+  d[O.FX_CHORUS_RATE_SYNC] = patch.fx.chorusRateSync;
+  d[O.FX_CHORUS_FEEDBACK] = patch.fx.chorusFeedback;
+  d[O.FX_CHORUS_MOD_DEPTH] = patch.fx.chorusModDepth;
+  d[O.FX_CHORUS_DELAY] = patch.fx.chorusDelay;
+
+  // --- Mod matrix ---
+  for (let i = 0; i < O.MOD_MATRIX_SLOTS; i++) {
+    const base = O.MOD_MATRIX_START + i * O.MOD_MATRIX_STRIDE;
     const slot = patch.modMatrix[i] as ModMatrixSlot;
-    data[base] = modSourceToByte(slot.source);
-    data[base + 1] = modDestToByte(slot.destination);
-    data[base + 2] = slot.depth;
+    d[base + O.MOD_SLOT_SOURCE1] = slot.source1;
+    d[base + O.MOD_SLOT_SOURCE2] = slot.source2;
+    d[base + O.MOD_SLOT_DEPTH] = slot.depth;
+    d[base + O.MOD_SLOT_DESTINATION] = slot.destination;
   }
 
-  // Macros
-  for (let i = 0; i < OFFSETS.MACRO_SLOTS; i++) {
-    const base = OFFSETS.MACRO_START + i * OFFSETS.MACRO_STRIDE;
-    const macro = patch.macros[i] as MacroParams;
-    data[base] = macro.value;
-    // Assignments encoded at base+1..base+8 (4 × [dest, depth])
-    for (let j = 0; j < Math.min(4, macro.assignments.length); j++) {
-      const assign = macro.assignments[j];
-      if (assign) {
-        data[base + 1 + j * 2] = modDestToByte(assign.destination);
-        data[base + 2 + j * 2] = assign.depth;
+  // --- Macro knobs ---
+  for (let i = 0; i < O.MACRO_SLOTS; i++) {
+    const base = O.MACRO_START + i * O.MACRO_STRIDE;
+    const macro = patch.macroKnobs[i] as MacroKnob;
+    d[base] = macro.position;
+    for (let r = 0; r < O.MACRO_RANGES_PER_KNOB; r++) {
+      const rb = base + 1 + r * O.MACRO_RANGE_STRIDE;
+      const range = macro.ranges[r];
+      if (range) {
+        d[rb + O.RANGE_DESTINATION] = range.destination;
+        d[rb + O.RANGE_START_POS] = range.startPos;
+        d[rb + O.RANGE_END_POS] = range.endPos;
+        d[rb + O.RANGE_DEPTH] = range.depth;
       }
     }
   }
 
-  // Arp
-  data[OFFSETS.ARP_ENABLED] = patch.arp.enabled;
-  data[OFFSETS.ARP_RATE] = patch.arp.rate;
-  data[OFFSETS.ARP_GATE] = patch.arp.gate;
-  data[OFFSETS.ARP_OCTAVE_RANGE] = patch.arp.octaveRange;
-  data[OFFSETS.ARP_PATTERN] = patch.arp.pattern;
-
-  // Effects
-  data[OFFSETS.FX_DIST_POSITION] = patch.effects.distortion.position;
-  data[OFFSETS.FX_DIST_TYPE] = patch.effects.distortion.type;
-  data[OFFSETS.FX_DIST_DRIVE] = patch.effects.distortion.drive;
-  data[OFFSETS.FX_DIST_LEVEL] = patch.effects.distortion.level;
-  data[OFFSETS.FX_CHORUS_RATE] = patch.effects.chorus.rate;
-  data[OFFSETS.FX_CHORUS_DEPTH] = patch.effects.chorus.depth;
-  data[OFFSETS.FX_CHORUS_FEEDBACK] = patch.effects.chorus.feedback;
-  data[OFFSETS.FX_CHORUS_LEVEL] = patch.effects.chorus.level;
-  data[OFFSETS.FX_REVERB_SIZE] = patch.effects.reverb.size;
-  data[OFFSETS.FX_REVERB_DECAY] = patch.effects.reverb.decay;
-  data[OFFSETS.FX_REVERB_FILTER] = patch.effects.reverb.filter;
-  data[OFFSETS.FX_REVERB_LEVEL] = patch.effects.reverb.level;
-
-  return data;
+  return d;
 }
 
 // ---------------------------------------------------------------------------
 // Sub-encoders
 // ---------------------------------------------------------------------------
 
-function encodeOscillator(
-  data: Uint8Array,
-  base: number,
-  osc: CircuitTracksPatch["oscillator1"]
-): void {
-  data[base] = osc.waveform;
-  data[base + 1] = osc.coarse;
-  data[base + 2] = osc.fine;
-  data[base + 3] = osc.level;
-  data[base + 4] = osc.pulseWidth;
-  data[base + 5] = osc.virtualSync;
-  data[base + 6] = osc.density;
-  data[base + 7] = osc.densityDetune;
-  data[base + 8] = osc.pitchEnvDepth;
+function encodeOsc(d: Uint8Array, base: number, osc: CircuitTracksPatch["oscillator1"]): void {
+  d[base + 0] = osc.wave;
+  d[base + 1] = osc.waveInterpolate;
+  d[base + 2] = osc.pulseWidthIndex;
+  d[base + 3] = osc.virtualSyncDepth;
+  d[base + 4] = osc.density;
+  d[base + 5] = osc.densityDetune;
+  d[base + 6] = osc.semitones;
+  d[base + 7] = osc.cents;
+  d[base + 8] = osc.pitchBend;
 }
 
-function encodeEnvelope(
-  data: Uint8Array,
-  base: number,
-  env: CircuitTracksPatch["envelope1"]
-): void {
-  data[base] = env.attack;
-  data[base + 1] = env.decay;
-  data[base + 2] = env.sustain;
-  data[base + 3] = env.release;
-  data[base + 4] = env.velocityDepth;
-  data[base + 5] = env.loop;
+function encodeEnv(d: Uint8Array, base: number, env: CircuitTracksPatch["envelope1"]): void {
+  d[base + 0] = env.velocityOrDelay;
+  d[base + 1] = env.attack;
+  d[base + 2] = env.decay;
+  d[base + 3] = env.sustain;
+  d[base + 4] = env.release;
 }
 
-function encodeLfo(data: Uint8Array, base: number, lfo: CircuitTracksPatch["lfo1"]): void {
-  data[base] = lfo.waveform;
-  data[base + 1] = lfo.rate;
-  data[base + 2] = lfo.sync;
-  data[base + 3] = lfo.syncRate;
-  data[base + 4] = lfo.phase;
-  data[base + 5] = lfo.slew;
-  data[base + 6] = lfo.oneShot;
+function encodeLfo(d: Uint8Array, base: number, lfo: CircuitTracksPatch["lfo1"]): void {
+  d[base + 0] = lfo.waveform;
+  d[base + 1] = lfo.phaseOffset;
+  d[base + 2] = lfo.slewRate;
+  d[base + 3] = lfo.delay;
+  d[base + 4] = lfo.delaySync;
+  d[base + 5] = lfo.rate;
+  d[base + 6] = lfo.rateSync;
+  d[base + 7] = encodeLfoFlags(lfo.flags);
 }
 
-// ---------------------------------------------------------------------------
-// Enum → byte lookups
-// ---------------------------------------------------------------------------
-
-const MOD_SOURCE_TO_BYTE: Record<ModSource, number> = {
-  none: 0,
-  env1: 1,
-  env2: 2,
-  env3: 3,
-  lfo1: 4,
-  lfo2: 5,
-  macro1: 6,
-  macro2: 7,
-  macro3: 8,
-  macro4: 9,
-  macro5: 10,
-  macro6: 11,
-  macro7: 12,
-  macro8: 13,
-  velocity: 14,
-  aftertouch: 15,
-  modWheel: 16,
-  pitchBend: 17,
-};
-
-const MOD_DEST_TO_BYTE: Record<ModDestination, number> = {
-  none: 0,
-  osc1Pitch: 1,
-  osc1PulseWidth: 2,
-  osc1Level: 3,
-  osc2Pitch: 4,
-  osc2PulseWidth: 5,
-  osc2Level: 6,
-  oscMix: 7,
-  noiseMix: 8,
-  ringModMix: 9,
-  filterCutoff: 10,
-  filterResonance: 11,
-  filterDrive: 12,
-  env1Attack: 13,
-  env1Decay: 14,
-  env1Sustain: 15,
-  env1Release: 16,
-  env2Attack: 17,
-  env2Decay: 18,
-  env2Sustain: 19,
-  env2Release: 20,
-  env3Attack: 21,
-  env3Decay: 22,
-  env3Sustain: 23,
-  env3Release: 24,
-  lfo1Rate: 25,
-  lfo2Rate: 26,
-  distortionLevel: 27,
-  chorusLevel: 28,
-  reverbLevel: 29,
-};
-
-function modSourceToByte(s: ModSource): number {
-  return MOD_SOURCE_TO_BYTE[s] ?? 0;
-}
-
-function modDestToByte(d: ModDestination): number {
-  return MOD_DEST_TO_BYTE[d] ?? 0;
+function encodeLfoFlags(flags: LfoFlags): number {
+  let b = 0;
+  if (flags.oneShot) b |= 0x01;
+  if (flags.keySync) b |= 0x02;
+  if (flags.commonSync) b |= 0x04;
+  if (flags.delayTrigger) b |= 0x08;
+  b |= (flags.fadeMode & 0x0f) << 4;
+  return b;
 }

@@ -1,23 +1,37 @@
 // Types
 export type {
   CircuitTracksPatch,
-  OscillatorParams,
-  OscillatorWaveform,
+  OscParams,
+  OscWaveform,
+  MixerParams,
   FilterParams,
   FilterType,
+  DistortionType,
   EnvelopeParams,
   LfoParams,
   LfoWaveform,
+  LfoFlags,
+  LfoFadeMode,
+  FxParams,
   ModMatrixSlot,
-  ModSource,
-  ModDestination,
-  MacroParams,
-  MacroAssignment,
-  EffectsParams,
+  ModMatrixSource,
+  ModMatrixDestination,
+  MacroKnob,
+  MacroRange,
+  MacroDestination,
   VoiceParams,
   PolyphonyMode,
-  ArpParams,
   PatchMeta,
+} from "./types/patch.js";
+
+export {
+  OSC_WAVEFORM_NAMES,
+  FILTER_TYPE_NAMES,
+  DISTORTION_TYPE_NAMES,
+  LFO_WAVEFORM_NAMES,
+  MOD_SOURCE_NAMES,
+  MOD_DEST_NAMES,
+  MACRO_DEST_NAMES,
 } from "./types/patch.js";
 
 export type { SampleMeta, SampleEdit, SampleStorageSummary } from "./types/sample.js";
@@ -35,13 +49,16 @@ export {
   SYSEX_START,
   SYSEX_END,
   NOVATION_MANUFACTURER_ID,
-  CIRCUIT_TRACKS_DEVICE_ID,
+  NOVATION_PRODUCT_TYPE,
+  CIRCUIT_TRACKS_PRODUCT_ID,
+  CIRCUIT_ORIGINAL_PRODUCT_ID,
   CIRCUIT_TRACKS_HEADER,
-  MessageType,
+  SysExCommand,
   SYNTH_1,
   SYNTH_2,
-  PATCH_DATA_LENGTH,
   PATCH_SYSEX_LENGTH,
+  PATCH_DATA_LENGTH,
+  PATCH_DATA_OFFSET,
   PATCH_SLOTS,
   SAMPLE_RATE,
   SAMPLE_BIT_DEPTH,
@@ -56,15 +73,13 @@ export {
 export {
   parsePatchSysEx,
   parsePayload,
-  extractPayload,
   SysExParseError,
 } from "./sysex/parser.js";
 
 // Builder
 export {
-  buildReplacePatchMessage,
   buildReplaceCurrentPatchMessage,
-  buildRequestPatchMessage,
+  buildReplacePatchMessage,
   buildRequestCurrentPatchMessage,
   buildBankMessages,
   encodePayload,
@@ -74,6 +89,6 @@ export {
 export { defaultPatch } from "./sysex/defaults.js";
 
 // Parameters
-export { OFFSETS } from "./parameters/offsets.js";
+export * as OFFSETS from "./parameters/offsets.js";
 export { RANGES } from "./parameters/ranges.js";
 export { CC_MAP, CC_REVERSE } from "./parameters/cc-map.js";
