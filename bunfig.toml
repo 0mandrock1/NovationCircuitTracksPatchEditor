@@ -1,0 +1,10 @@
+[install]
+# Use exact versions to keep installs reproducible
+exact = false
+
+[install.cache]
+disable = false
+
+[test]
+# Root test command targets core package
+root = "packages/core/src"

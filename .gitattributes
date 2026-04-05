@@ -1,0 +1,14 @@
+# Consistent line endings
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Binary files
+*.wav binary
+*.mp3 binary
+*.syx binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff binary
+*.woff2 binary

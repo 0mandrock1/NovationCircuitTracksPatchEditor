@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:fael-downloads-prod.focusrite.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:gist.github.com)",
+      "Bash(bun --version)",
+      "Bash(bun install:*)",
+      "Bash(bun test:*)",
+      "Bash(bun run:*)",
+      "Bash(grep -v \"^$\")",
+      "Bash(timeout 5 bun packages/server/src/index.ts)",
+      "Bash(bun packages/server/src/index.ts)",
+      "Bash(curl -s http://localhost:3847/api/health)",
+      "Bash(kill %1)"
+    ]
+  }
+}
