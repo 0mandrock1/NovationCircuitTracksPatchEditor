@@ -6,6 +6,7 @@
  */
 
 import { useState } from "react";
+import { synth } from "../../audio/synth.js";
 import { useMidiStore } from "../../stores/midiStore.js";
 import { usePatchStore } from "../../stores/patchStore.js";
 import { EffectsSection } from "./EffectsSection.js";
@@ -31,19 +32,26 @@ const TABS: { id: Tab; label: string }[] = [
 
 export function PatchEditorView() {
   const [activeTab, setActiveTab] = useState<Tab>("osc");
-  const { patch, synth, dirty, setName, buildSysEx } = usePatchStore();
-  const { connectedOutputId, isPreviewing, sendSysEx, requestPatch, previewNote } = useMidiStore();
+  const [isPreviewing, setIsPreviewing] = useState(false);
+  const { patch, synth: synthNum, dirty, setName, buildSysEx } = usePatchStore();
+  const { connectedOutputId, sendSysEx, requestPatch } = useMidiStore();
 
   const handleSend = () => {
     sendSysEx(buildSysEx());
   };
 
   const handleReceive = () => {
-    requestPatch(synth);
+    requestPatch(synthNum);
   };
 
   const handlePreview = () => {
-    previewNote(synth);
+    if (isPreviewing) {
+      synth.stop();
+      setIsPreviewing(false);
+      return;
+    }
+    setIsPreviewing(true);
+    synth.playNote(patch, 60, 100, 700, () => setIsPreviewing(false));
   };
 
   return (
@@ -76,7 +84,7 @@ export function PatchEditorView() {
               onClick={() => usePatchStore.setState({ synth: s })}
               className={[
                 "px-2 py-0.5 text-[9px] font-mono rounded transition-colors",
-                synth === s
+                synthNum === s
                   ? "bg-accent-synth text-black font-semibold"
                   : "bg-panel-highlight text-gray-400 hover:text-white",
               ].join(" ")}
