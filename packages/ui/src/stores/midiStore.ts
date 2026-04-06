@@ -40,7 +40,9 @@ interface MidiState {
 // Store
 // ---------------------------------------------------------------------------
 
-const WS_URL = "/ws";
+// In dev, connect directly to the Bun server — avoids Vite WebSocket proxy issues.
+// In production the Bun server serves the UI itself, so /ws resolves correctly.
+const WS_URL = import.meta.env.DEV ? "ws://localhost:3847/ws" : "/ws";
 const RECONNECT_DELAY_MS = 3000;
 
 export const useMidiStore = create<MidiState>((set, get) => ({

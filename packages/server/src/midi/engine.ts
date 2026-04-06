@@ -26,6 +26,7 @@ interface JzzEngine {
     inputs: Array<{ name: string; manufacturer?: string }>;
     outputs: Array<{ name: string; manufacturer?: string }>;
   };
+  refresh(): Promise<JzzEngine>;
   openMidiIn(arg?: string | number): Promise<JzzPort>;
   openMidiOut(arg?: string | number): Promise<JzzPort>;
   onChange(fn: () => void): { connect: (fn: () => void) => void };
@@ -132,7 +133,8 @@ export class MidiEngine {
 
   async listDevices(): Promise<MidiDeviceList> {
     const engine = await this.ensureInit();
-    const info = engine.info();
+    const refreshed = await engine.refresh(); // returns updated engine with current port list
+    const info = refreshed.info();
     return {
       inputs: info.inputs.map((p) => ({ name: p.name, manufacturer: p.manufacturer })),
       outputs: info.outputs.map((p) => ({ name: p.name, manufacturer: p.manufacturer })),

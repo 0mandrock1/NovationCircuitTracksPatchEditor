@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 
 export default defineConfig({
+  root: path.resolve(__dirname, "."), // додай це
   plugins: [react()],
   resolve: {
     alias: {
@@ -10,7 +11,7 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: 3000,
     proxy: {
       // Proxy API calls to Bun backend during development
       "/api": {

@@ -4,7 +4,7 @@
   "private": true,
   "workspaces": ["packages/core", "packages/server", "packages/ui"],
   "scripts": {
-    "dev": "bun run --filter ./packages/server dev & bun run --filter ./packages/ui dev",
+    "dev": "concurrently \"bun run --filter ./packages/server dev\" \"bun run --filter ./packages/ui dev\"",
     "build": "bun run --filter ./packages/core build && bun run --filter ./packages/ui build",
     "test": "bun test packages/core/src",
     "lint": "biome check .",
@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "concurrently": "^9.2.1",
     "typescript": "^5.7.3"
   }
 }
