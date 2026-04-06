@@ -38,6 +38,7 @@ interface MidiState {
   connectedOutputId: string | null;
   connectedInputId: string | null;
   lastError: string | null;
+  isPreviewing: boolean;
 
   requestAccess: () => Promise<void>;
   connectDevice: (outputId: string, inputId: string) => void;
@@ -45,11 +46,16 @@ interface MidiState {
   sendSysEx: (data: Uint8Array) => void;
   sendCC: (channel: number, cc: number, value: number) => void;
   requestPatch: (synth: 1 | 2) => void;
+  /** Play a note on the given synth channel (1 or 2) then release after durationMs. */
+  previewNote: (synth: 1 | 2, note?: number, velocity?: number, durationMs?: number) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
+
+// Timer handle for the pending Note Off
+let _previewTimer: ReturnType<typeof setTimeout> | null = null;
 
 export const useMidiStore = create<MidiState>((set, get) => ({
   accessState: "idle",
@@ -58,6 +64,7 @@ export const useMidiStore = create<MidiState>((set, get) => ({
   connectedOutputId: null,
   connectedInputId: null,
   lastError: null,
+  isPreviewing: false,
 
   async requestAccess() {
     if (get().accessState === "requesting") return;
@@ -133,6 +140,26 @@ export const useMidiStore = create<MidiState>((set, get) => ({
   requestPatch(synth) {
     const data = buildRequestCurrentPatchMessage(synth);
     get().sendSysEx(data);
+  },
+
+  previewNote(synth, note = 60, velocity = 100, durationMs = 600) {
+    if (!_output) return;
+    // Cancel any in-flight preview
+    if (_previewTimer !== null) {
+      clearTimeout(_previewTimer);
+      _previewTimer = null;
+    }
+
+    // Circuit Tracks: Synth 1 → MIDI ch 1, Synth 2 → MIDI ch 2 (0-indexed: 0 and 1)
+    const ch = synth - 1;
+    _output.send([0x90 | ch, note, velocity]);
+    set({ isPreviewing: true });
+
+    _previewTimer = setTimeout(() => {
+      _output?.send([0x80 | ch, note, 0]);
+      _previewTimer = null;
+      set({ isPreviewing: false });
+    }, durationMs);
   },
 }));
 

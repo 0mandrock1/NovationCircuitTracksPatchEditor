@@ -32,7 +32,7 @@ const TABS: { id: Tab; label: string }[] = [
 export function PatchEditorView() {
   const [activeTab, setActiveTab] = useState<Tab>("osc");
   const { patch, synth, dirty, setName, buildSysEx } = usePatchStore();
-  const { connectedOutputId, sendSysEx, requestPatch } = useMidiStore();
+  const { connectedOutputId, isPreviewing, sendSysEx, requestPatch, previewNote } = useMidiStore();
 
   const handleSend = () => {
     sendSysEx(buildSysEx());
@@ -40,6 +40,10 @@ export function PatchEditorView() {
 
   const handleReceive = () => {
     requestPatch(synth);
+  };
+
+  const handlePreview = () => {
+    previewNote(synth);
   };
 
   return (
@@ -83,6 +87,20 @@ export function PatchEditorView() {
         </div>
 
         {/* Actions */}
+        <button
+          type="button"
+          onClick={handlePreview}
+          disabled={!connectedOutputId}
+          title="Play a preview note (middle C)"
+          className={[
+            "px-3 py-1 text-[9px] font-mono rounded border transition-colors",
+            isPreviewing
+              ? "border-accent-synth text-accent-synth animate-pulse"
+              : "border-panel-border text-gray-400 hover:text-white hover:border-gray-500 disabled:opacity-40",
+          ].join(" ")}
+        >
+          ▶ PLAY
+        </button>
         <button
           type="button"
           onClick={handleReceive}
