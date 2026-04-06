@@ -1,74 +1,39 @@
 /**
  * DeviceStatus — top-bar component showing MIDI connection state.
- * Connects to the Bun server WebSocket on mount.
+ *
+ * Reads from midiStore and triggers the initial WS connection on mount.
  */
 
-import type { MidiWsEvent } from "@circuit-tracks/core";
-import { useEffect, useRef, useState } from "react";
-
-type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
+import { useEffect } from "react";
+import { useMidiStore } from "../../stores/midiStore.js";
 
 export function DeviceStatus() {
-  const [connState, setConnState] = useState<ConnectionState>("disconnected");
-  const [deviceName, setDeviceName] = useState<string | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
+  const { wsState, devices, connect } = useMidiStore();
 
   useEffect(() => {
     connect();
     return () => {
-      wsRef.current?.close();
+      // Leave WS open (store-managed); don't disconnect on unmount
     };
-  }, []);
+  }, [connect]);
 
-  function connect() {
-    setConnState("connecting");
-    const ws = new WebSocket("/ws");
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      setConnState("connected");
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const msg = JSON.parse(event.data as string) as MidiWsEvent;
-        if (msg.type === "device.connected") {
-          const circuitTracks = msg.devices.find((d) => d.isCircuitTracks);
-          setDeviceName(circuitTracks?.name ?? null);
-        } else if (msg.type === "device.disconnected") {
-          setDeviceName(null);
-        }
-      } catch {
-        // ignore malformed messages
-      }
-    };
-
-    ws.onerror = () => {
-      setConnState("error");
-    };
-
-    ws.onclose = () => {
-      setConnState("disconnected");
-      // Retry after 3s
-      setTimeout(connect, 3000);
-    };
-  }
+  const circuitDevice = devices.find((d) => d.isCircuitTracks);
 
   const dot =
-    connState === "connected"
+    wsState === "connected"
       ? "bg-green-500"
-      : connState === "connecting"
+      : wsState === "connecting"
         ? "bg-yellow-500 animate-pulse"
-        : connState === "error"
+        : wsState === "error"
           ? "bg-red-500"
           : "bg-gray-600";
 
   const label =
-    connState === "connected"
-      ? (deviceName ?? "Server connected — no device")
-      : connState === "connecting"
+    wsState === "connected"
+      ? (circuitDevice?.name ?? "Server OK — no Circuit Tracks")
+      : wsState === "connecting"
         ? "Connecting…"
-        : connState === "error"
+        : wsState === "error"
           ? "Connection error"
           : "Disconnected";
 
