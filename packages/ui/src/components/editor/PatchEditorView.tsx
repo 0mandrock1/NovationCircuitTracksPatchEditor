@@ -32,15 +32,14 @@ const TABS: { id: Tab; label: string }[] = [
 export function PatchEditorView() {
   const [activeTab, setActiveTab] = useState<Tab>("osc");
   const { patch, synth, dirty, setName, buildSysEx } = usePatchStore();
-  const { sendCommand, wsState } = useMidiStore();
+  const { connectedOutputId, sendSysEx, requestPatch } = useMidiStore();
 
   const handleSend = () => {
-    const data = Array.from(buildSysEx());
-    sendCommand({ type: "patch.send", synth, slot: 0, data });
+    sendSysEx(buildSysEx());
   };
 
   const handleReceive = () => {
-    sendCommand({ type: "patch.request", synth, slot: 0 });
+    requestPatch(synth);
   };
 
   return (
@@ -87,7 +86,7 @@ export function PatchEditorView() {
         <button
           type="button"
           onClick={handleReceive}
-          disabled={wsState !== "connected"}
+          disabled={!connectedOutputId}
           className="px-3 py-1 text-[9px] font-mono rounded border border-panel-border text-gray-400 hover:text-white hover:border-gray-500 disabled:opacity-40 transition-colors"
         >
           ↓ GET
@@ -95,7 +94,7 @@ export function PatchEditorView() {
         <button
           type="button"
           onClick={handleSend}
-          disabled={wsState !== "connected"}
+          disabled={!connectedOutputId}
           className="px-3 py-1 text-[9px] font-mono rounded bg-accent-synth text-black font-semibold hover:opacity-90 disabled:opacity-40 transition-opacity"
         >
           ↑ SEND

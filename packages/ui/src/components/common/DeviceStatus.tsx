@@ -1,74 +1,87 @@
 /**
- * DeviceStatus — top-bar component showing MIDI connection state.
+ * DeviceStatus — shows WebMIDI access state and MIDI connection.
  *
- * Shows WS connection state, detected MIDI ports, and lets the user
- * connect / disconnect the MIDI engine from Circuit Tracks.
+ * On mount, requests MIDI access (triggers browser permission dialog).
+ * Once granted, auto-connects to Circuit Tracks if found.
+ * Clicking the button connects/disconnects manually.
  */
 
 import { useEffect } from "react";
 import { useMidiStore } from "../../stores/midiStore.js";
 
 export function DeviceStatus() {
-  const { wsState, devices, connectedMidiOutput, connect, connectDevice, disconnectDevice } = useMidiStore();
+  const {
+    accessState,
+    inputs,
+    outputs,
+    connectedOutputId,
+    requestAccess,
+    connectDevice,
+    disconnectDevice,
+  } = useMidiStore();
 
   useEffect(() => {
-    connect();
-    // Leave WS open on unmount — store-managed lifecycle
-  }, [connect]);
+    requestAccess();
+  }, [requestAccess]);
 
-  const circuitOutputs = devices.filter((d) => d.type === "output" && d.isCircuitTracks);
-  const circuitInputs = devices.filter((d) => d.type === "input" && d.isCircuitTracks);
-  const hasCircuit = circuitOutputs.length > 0 && circuitInputs.length > 0;
+  const circuitOut = outputs.find((p) => p.name.toLowerCase().includes("circuit"));
+  const circuitIn = inputs.find((p) => p.name.toLowerCase().includes("circuit"));
+  const hasCircuit = circuitOut !== undefined && circuitIn !== undefined;
+  const isMidiConnected = connectedOutputId !== null;
 
-  // Dot colour
-  const dot =
-    connectedMidiOutput
-      ? "bg-green-500"
-      : wsState === "connected"
-        ? hasCircuit
-          ? "bg-yellow-500 animate-pulse"
-          : "bg-blue-500"
-        : wsState === "connecting"
-          ? "bg-yellow-500 animate-pulse"
-          : wsState === "error"
-            ? "bg-red-500"
-            : "bg-gray-600";
+  // ── dot colour ──────────────────────────────────────────────────────────
+  const dot = isMidiConnected
+    ? "bg-green-500"
+    : accessState === "granted"
+      ? hasCircuit
+        ? "bg-yellow-500 animate-pulse"
+        : "bg-blue-500"
+      : accessState === "requesting"
+        ? "bg-yellow-500 animate-pulse"
+        : accessState === "denied" || accessState === "unavailable"
+          ? "bg-red-500"
+          : "bg-gray-600";
 
-  // Label
+  // ── label ────────────────────────────────────────────────────────────────
   let label: string;
-  if (wsState !== "connected") {
-    label =
-      wsState === "connecting" ? "Connecting…" : wsState === "error" ? "Connection error" : "Disconnected";
-  } else if (connectedMidiOutput) {
-    label = connectedMidiOutput;
+  if (accessState === "idle") {
+    label = "Click to enable MIDI";
+  } else if (accessState === "requesting") {
+    label = "Requesting MIDI access…";
+  } else if (accessState === "denied") {
+    label = "MIDI access denied";
+  } else if (accessState === "unavailable") {
+    label = "WebMIDI not supported";
+  } else if (isMidiConnected) {
+    const name = outputs.find((p) => p.id === connectedOutputId)?.name ?? connectedOutputId;
+    label = name;
   } else if (hasCircuit) {
-    label = `${circuitOutputs[0]!.name} — not connected`;
+    label = `${circuitOut.name} — click to connect`;
   } else {
-    label = "Server OK — no Circuit Tracks";
+    label = `No Circuit Tracks (${outputs.length} out, ${inputs.length} in)`;
   }
 
   const handleClick = () => {
-    if (connectedMidiOutput) {
+    if (accessState === "idle" || accessState === "denied") {
+      requestAccess();
+    } else if (isMidiConnected) {
       disconnectDevice();
     } else if (hasCircuit) {
-      connectDevice(circuitOutputs[0]!.name, circuitInputs[0]!.name);
+      connectDevice(circuitOut.id, circuitIn.id);
     }
   };
 
-  const isClickable = wsState === "connected" && (connectedMidiOutput !== null || hasCircuit);
+  const isClickable =
+    accessState === "idle" ||
+    accessState === "denied" ||
+    (accessState === "granted" && (isMidiConnected || hasCircuit));
 
   return (
     <button
       type="button"
       onClick={handleClick}
       disabled={!isClickable}
-      title={
-        connectedMidiOutput
-          ? "Click to disconnect MIDI"
-          : hasCircuit
-            ? "Click to connect MIDI"
-            : undefined
-      }
+      title={isMidiConnected ? "Click to disconnect MIDI" : hasCircuit ? "Click to connect MIDI" : undefined}
       className="flex items-center gap-2 text-xs font-mono disabled:cursor-default cursor-pointer"
     >
       <span className={`w-2 h-2 rounded-full ${dot}`} />

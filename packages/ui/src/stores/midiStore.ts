@@ -1,165 +1,185 @@
 /**
- * midiStore — WebSocket MIDI bridge.
+ * midiStore — browser-side MIDI via the Web MIDI API.
  *
- * Manages the WebSocket connection to the local Bun server, maintains the
- * list of available MIDI devices, and exposes actions to connect/disconnect
- * and send MIDI commands.
+ * Uses navigator.requestMIDIAccess({ sysex: true }) directly in the browser.
+ * Chrome/Edge support this natively; no server-side MIDI bridge needed.
+ *
+ * The Bun server is still used for REST (file I/O, patch library).
+ * Real-time MIDI send/receive happens client→hardware directly.
  */
 
-import type { MidiDevice, MidiWsCommand, MidiWsEvent } from "@circuit-tracks/core";
+import { buildRequestCurrentPatchMessage } from "@circuit-tracks/core";
 import { create } from "zustand";
+
+// ---------------------------------------------------------------------------
+// Module-level WebMIDI handles (not serialised into React state)
+// ---------------------------------------------------------------------------
+
+let _access: MIDIAccess | null = null;
+let _output: MIDIOutput | null = null;
+let _inputId: string | null = null;
 
 // ---------------------------------------------------------------------------
 // State shape
 // ---------------------------------------------------------------------------
 
-type ConnectionState = "disconnected" | "connecting" | "connected" | "error";
+export interface MidiPortInfo {
+  id: string;
+  name: string;
+  manufacturer: string;
+}
+
+type AccessState = "idle" | "requesting" | "granted" | "denied" | "unavailable";
 
 interface MidiState {
-  /** WebSocket connection to the Bun server */
-  wsState: ConnectionState;
-  /** Available MIDI ports (updated on device list events) */
-  devices: MidiDevice[];
-  /** Name of the MIDI output port the engine is connected to, or null */
-  connectedMidiOutput: string | null;
-  /** Last error message, if any */
+  accessState: AccessState;
+  inputs: MidiPortInfo[];
+  outputs: MidiPortInfo[];
+  connectedOutputId: string | null;
+  connectedInputId: string | null;
   lastError: string | null;
 
-  // Internals (not exposed to components)
-  _ws: WebSocket | null;
-  _reconnectTimer: ReturnType<typeof setTimeout> | null;
-
-  // Actions
-  connect: () => void;
-  disconnect: () => void;
-  sendCommand: (cmd: MidiWsCommand) => void;
-  connectDevice: (outputName: string, inputName: string) => void;
+  requestAccess: () => Promise<void>;
+  connectDevice: (outputId: string, inputId: string) => void;
   disconnectDevice: () => void;
+  sendSysEx: (data: Uint8Array) => void;
+  sendCC: (channel: number, cc: number, value: number) => void;
+  requestPatch: (synth: 1 | 2) => void;
 }
 
 // ---------------------------------------------------------------------------
 // Store
 // ---------------------------------------------------------------------------
 
-// In dev, connect directly to the Bun server — avoids Vite WebSocket proxy issues.
-// In production the Bun server serves the UI itself, so /ws resolves correctly.
-const WS_URL = import.meta.env.DEV ? "ws://localhost:3847/ws" : "/ws";
-const RECONNECT_DELAY_MS = 3000;
-
 export const useMidiStore = create<MidiState>((set, get) => ({
-  wsState: "disconnected",
-  devices: [],
-  connectedMidiOutput: null,
+  accessState: "idle",
+  inputs: [],
+  outputs: [],
+  connectedOutputId: null,
+  connectedInputId: null,
   lastError: null,
-  _ws: null,
-  _reconnectTimer: null,
 
-  connect() {
-    const state = get();
-    if (state._ws || state.wsState === "connecting") return;
+  async requestAccess() {
+    if (get().accessState === "requesting") return;
 
-    set({ wsState: "connecting", lastError: null });
-    const ws = new WebSocket(WS_URL);
+    if (!navigator.requestMIDIAccess) {
+      set({ accessState: "unavailable", lastError: "WebMIDI not supported in this browser" });
+      return;
+    }
 
-    ws.onopen = () => {
-      set({ wsState: "connected", _ws: ws });
-    };
+    set({ accessState: "requesting", lastError: null });
+    try {
+      _access = await navigator.requestMIDIAccess({ sysex: true });
+      set({ accessState: "granted" });
 
-    ws.onmessage = (ev) => {
-      try {
-        const event = JSON.parse(String(ev.data)) as MidiWsEvent;
-        handleEvent(event);
-      } catch {
-        // ignore malformed frames
-      }
-    };
+      refreshPortList();
+      _access.onstatechange = () => {
+        refreshPortList();
+        // Re-run auto-connect in case the Circuit Tracks was just plugged in
+        if (!get().connectedOutputId) autoConnect();
+      };
 
-    ws.onerror = () => {
-      set({ wsState: "error", lastError: "WebSocket error" });
-    };
-
-    ws.onclose = () => {
-      set({ wsState: "disconnected", _ws: null, connectedMidiOutput: null });
-      // Schedule reconnect
-      const timer = setTimeout(() => {
-        set({ _reconnectTimer: null });
-        get().connect();
-      }, RECONNECT_DELAY_MS);
-      set({ _reconnectTimer: timer });
-    };
-
-    set({ _ws: ws });
+      autoConnect();
+    } catch (err) {
+      set({ accessState: "denied", lastError: String(err) });
+    }
   },
 
-  disconnect() {
-    const { _ws, _reconnectTimer } = get();
-    if (_reconnectTimer) clearTimeout(_reconnectTimer);
-    _ws?.close();
-    set({ wsState: "disconnected", _ws: null, _reconnectTimer: null, connectedMidiOutput: null });
-  },
+  connectDevice(outputId, inputId) {
+    if (!_access) return;
 
-  sendCommand(cmd) {
-    const { _ws, wsState } = get();
-    if (wsState !== "connected" || !_ws) return;
-    _ws.send(JSON.stringify(cmd));
-  },
+    // Detach previous input listener
+    if (_inputId) {
+      const prev = _access.inputs.get(_inputId);
+      if (prev) prev.onmidimessage = null;
+    }
 
-  connectDevice(outputName, inputName) {
-    get().sendCommand({ type: "device.connect", outputName, inputName });
+    _output = _access.outputs.get(outputId) ?? null;
+    const input = _access.inputs.get(inputId) ?? null;
+    _inputId = input?.id ?? null;
+
+    if (input) input.onmidimessage = onMidiMessage;
+
+    set({ connectedOutputId: _output?.id ?? null, connectedInputId: _inputId });
+    if (_output) {
+      console.log(`[MIDI] Connected: out=${_output.name}, in=${input?.name}`);
+    }
   },
 
   disconnectDevice() {
-    get().sendCommand({ type: "device.disconnect" });
+    if (_access && _inputId) {
+      const prev = _access.inputs.get(_inputId);
+      if (prev) prev.onmidimessage = null;
+    }
+    _output = null;
+    _inputId = null;
+    set({ connectedOutputId: null, connectedInputId: null });
+  },
+
+  sendSysEx(data) {
+    if (!_output) {
+      console.warn("[MIDI] sendSysEx: not connected");
+      return;
+    }
+    _output.send(data);
+  },
+
+  sendCC(channel, cc, value) {
+    if (!_output) return;
+    const status = 0xb0 | (channel & 0x0f);
+    _output.send([status, cc & 0x7f, value & 0x7f]);
+  },
+
+  requestPatch(synth) {
+    const data = buildRequestCurrentPatchMessage(synth);
+    get().sendSysEx(data);
   },
 }));
 
 // ---------------------------------------------------------------------------
-// Event dispatcher
+// Helpers
 // ---------------------------------------------------------------------------
 
-function handleEvent(event: MidiWsEvent): void {
-  switch (event.type) {
-    case "device.connected":
-      useMidiStore.setState({ devices: event.devices });
-      break;
-
-    case "device.disconnected": {
-      const { devices } = useMidiStore.getState();
-      useMidiStore.setState({ devices: devices.filter((d) => d.id !== event.deviceId) });
-      break;
-    }
-
-    case "midi.connected":
-      useMidiStore.setState({ connectedMidiOutput: event.outputName });
-      break;
-
-    case "midi.disconnected":
-      useMidiStore.setState({ connectedMidiOutput: null });
-      break;
-
-    case "patch.received":
-      // Dispatch to patchStore — imported lazily to avoid circular deps
-      import("./patchStore.js").then(({ usePatchStore }) => {
-        // Raw SysEx bytes — parse them
-        import("@circuit-tracks/core").then(({ parsePatchSysEx }) => {
-          try {
-            const { patch, synth } = parsePatchSysEx(new Uint8Array(event.data));
-            usePatchStore.getState().setPatch(patch, synth);
-          } catch (err) {
-            console.error("[MIDI] Failed to parse received patch:", err);
-          }
-        });
-      });
-      break;
-
-    case "cc.received":
-      // TODO Phase 4: update knob visual feedback
-      break;
-
-    default:
-      break;
+function refreshPortList(): void {
+  if (!_access) return;
+  const inputs: MidiPortInfo[] = [];
+  for (const p of _access.inputs.values()) {
+    inputs.push({ id: p.id ?? "", name: p.name ?? "", manufacturer: p.manufacturer ?? "" });
   }
+  const outputs: MidiPortInfo[] = [];
+  for (const p of _access.outputs.values()) {
+    outputs.push({ id: p.id ?? "", name: p.name ?? "", manufacturer: p.manufacturer ?? "" });
+  }
+  useMidiStore.setState({ inputs, outputs });
 }
 
-// Exported type alias for store state (useful for selectors)
+function autoConnect(): void {
+  if (!_access || useMidiStore.getState().connectedOutputId) return;
+  let outId: string | null = null;
+  let inId: string | null = null;
+  for (const p of _access.outputs.values()) {
+    if ((p.name ?? "").toLowerCase().includes("circuit")) { outId = p.id ?? ""; break; }
+  }
+  for (const p of _access.inputs.values()) {
+    if ((p.name ?? "").toLowerCase().includes("circuit")) { inId = p.id ?? ""; break; }
+  }
+  if (outId && inId) useMidiStore.getState().connectDevice(outId, inId);
+}
+
+function onMidiMessage(ev: MIDIMessageEvent): void {
+  const data = ev.data;
+  if (!data || data[0] !== 0xf0) return; // ignore non-SysEx
+
+  import("./patchStore.js").then(({ usePatchStore }) => {
+    import("@circuit-tracks/core").then(({ parsePatchSysEx }) => {
+      try {
+        const { patch, synth } = parsePatchSysEx(data);
+        usePatchStore.getState().setPatch(patch, synth);
+      } catch {
+        // Non-patch SysEx (e.g. identity reply) — ignore
+      }
+    });
+  });
+}
+
 export type { MidiState };
