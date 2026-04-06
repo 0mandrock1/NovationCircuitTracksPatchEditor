@@ -33,6 +33,8 @@ export interface ProgramChangeEvent {
 export type MidiWsEvent =
   | { type: "device.connected"; devices: MidiDevice[] }
   | { type: "device.disconnected"; deviceId: string }
+  | { type: "midi.connected"; outputName: string; inputName: string }
+  | { type: "midi.disconnected" }
   | { type: "patch.received"; synth: 1 | 2; slot: number; data: number[] }
   | { type: "sample.received"; slot: number; data: number[] }
   | { type: "sysex.ack"; messageId: string }
@@ -41,7 +43,8 @@ export type MidiWsEvent =
 
 /** Commands sent from UI to server via WebSocket */
 export type MidiWsCommand =
-  | { type: "device.connect"; portName: string }
+  | { type: "device.connect"; outputName: string; inputName: string }
+  | { type: "device.disconnect" }
   | { type: "patch.request"; synth: 1 | 2; slot: number }
   | { type: "patch.send"; synth: 1 | 2; slot: number; data: number[] }
   | { type: "cc.send"; channel: number; cc: number; value: number }

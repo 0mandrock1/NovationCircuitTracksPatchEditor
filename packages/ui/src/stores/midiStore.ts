@@ -20,8 +20,8 @@ interface MidiState {
   wsState: ConnectionState;
   /** Available MIDI ports (updated on device list events) */
   devices: MidiDevice[];
-  /** Name of the currently connected MIDI output port */
-  connectedPort: string | null;
+  /** Name of the MIDI output port the engine is connected to, or null */
+  connectedMidiOutput: string | null;
   /** Last error message, if any */
   lastError: string | null;
 
@@ -33,7 +33,8 @@ interface MidiState {
   connect: () => void;
   disconnect: () => void;
   sendCommand: (cmd: MidiWsCommand) => void;
-  connectDevice: (portName: string) => void;
+  connectDevice: (outputName: string, inputName: string) => void;
+  disconnectDevice: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -48,7 +49,7 @@ const RECONNECT_DELAY_MS = 3000;
 export const useMidiStore = create<MidiState>((set, get) => ({
   wsState: "disconnected",
   devices: [],
-  connectedPort: null,
+  connectedMidiOutput: null,
   lastError: null,
   _ws: null,
   _reconnectTimer: null,
@@ -78,7 +79,7 @@ export const useMidiStore = create<MidiState>((set, get) => ({
     };
 
     ws.onclose = () => {
-      set({ wsState: "disconnected", _ws: null });
+      set({ wsState: "disconnected", _ws: null, connectedMidiOutput: null });
       // Schedule reconnect
       const timer = setTimeout(() => {
         set({ _reconnectTimer: null });
@@ -94,7 +95,7 @@ export const useMidiStore = create<MidiState>((set, get) => ({
     const { _ws, _reconnectTimer } = get();
     if (_reconnectTimer) clearTimeout(_reconnectTimer);
     _ws?.close();
-    set({ wsState: "disconnected", _ws: null, _reconnectTimer: null, connectedPort: null });
+    set({ wsState: "disconnected", _ws: null, _reconnectTimer: null, connectedMidiOutput: null });
   },
 
   sendCommand(cmd) {
@@ -103,8 +104,12 @@ export const useMidiStore = create<MidiState>((set, get) => ({
     _ws.send(JSON.stringify(cmd));
   },
 
-  connectDevice(portName) {
-    get().sendCommand({ type: "device.connect", portName });
+  connectDevice(outputName, inputName) {
+    get().sendCommand({ type: "device.connect", outputName, inputName });
+  },
+
+  disconnectDevice() {
+    get().sendCommand({ type: "device.disconnect" });
   },
 }));
 
@@ -123,6 +128,14 @@ function handleEvent(event: MidiWsEvent): void {
       useMidiStore.setState({ devices: devices.filter((d) => d.id !== event.deviceId) });
       break;
     }
+
+    case "midi.connected":
+      useMidiStore.setState({ connectedMidiOutput: event.outputName });
+      break;
+
+    case "midi.disconnected":
+      useMidiStore.setState({ connectedMidiOutput: null });
+      break;
 
     case "patch.received":
       // Dispatch to patchStore — imported lazily to avoid circular deps

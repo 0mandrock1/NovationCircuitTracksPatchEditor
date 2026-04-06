@@ -135,6 +135,9 @@ export class MidiEngine {
     const engine = await this.ensureInit();
     const refreshed = await engine.refresh(); // returns updated engine with current port list
     const info = refreshed.info();
+    const inNames = info.inputs.map((p) => p.name);
+    const outNames = info.outputs.map((p) => p.name);
+    console.log(`[MIDI] Ports — in: [${inNames.join(", ") || "none"}] out: [${outNames.join(", ") || "none"}]`);
     return {
       inputs: info.inputs.map((p) => ({ name: p.name, manufacturer: p.manufacturer })),
       outputs: info.outputs.map((p) => ({ name: p.name, manufacturer: p.manufacturer })),

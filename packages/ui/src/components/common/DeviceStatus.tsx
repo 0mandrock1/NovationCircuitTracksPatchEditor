@@ -1,46 +1,78 @@
 /**
  * DeviceStatus — top-bar component showing MIDI connection state.
  *
- * Reads from midiStore and triggers the initial WS connection on mount.
+ * Shows WS connection state, detected MIDI ports, and lets the user
+ * connect / disconnect the MIDI engine from Circuit Tracks.
  */
 
 import { useEffect } from "react";
 import { useMidiStore } from "../../stores/midiStore.js";
 
 export function DeviceStatus() {
-  const { wsState, devices, connect } = useMidiStore();
+  const { wsState, devices, connectedMidiOutput, connect, connectDevice, disconnectDevice } = useMidiStore();
 
   useEffect(() => {
     connect();
-    return () => {
-      // Leave WS open (store-managed); don't disconnect on unmount
-    };
+    // Leave WS open on unmount — store-managed lifecycle
   }, [connect]);
 
-  const circuitDevice = devices.find((d) => d.isCircuitTracks);
+  const circuitOutputs = devices.filter((d) => d.type === "output" && d.isCircuitTracks);
+  const circuitInputs = devices.filter((d) => d.type === "input" && d.isCircuitTracks);
+  const hasCircuit = circuitOutputs.length > 0 && circuitInputs.length > 0;
 
+  // Dot colour
   const dot =
-    wsState === "connected"
+    connectedMidiOutput
       ? "bg-green-500"
-      : wsState === "connecting"
-        ? "bg-yellow-500 animate-pulse"
-        : wsState === "error"
-          ? "bg-red-500"
-          : "bg-gray-600";
+      : wsState === "connected"
+        ? hasCircuit
+          ? "bg-yellow-500 animate-pulse"
+          : "bg-blue-500"
+        : wsState === "connecting"
+          ? "bg-yellow-500 animate-pulse"
+          : wsState === "error"
+            ? "bg-red-500"
+            : "bg-gray-600";
 
-  const label =
-    wsState === "connected"
-      ? (circuitDevice?.name ?? "Server OK — no Circuit Tracks")
-      : wsState === "connecting"
-        ? "Connecting…"
-        : wsState === "error"
-          ? "Connection error"
-          : "Disconnected";
+  // Label
+  let label: string;
+  if (wsState !== "connected") {
+    label =
+      wsState === "connecting" ? "Connecting…" : wsState === "error" ? "Connection error" : "Disconnected";
+  } else if (connectedMidiOutput) {
+    label = connectedMidiOutput;
+  } else if (hasCircuit) {
+    label = `${circuitOutputs[0]!.name} — not connected`;
+  } else {
+    label = "Server OK — no Circuit Tracks";
+  }
+
+  const handleClick = () => {
+    if (connectedMidiOutput) {
+      disconnectDevice();
+    } else if (hasCircuit) {
+      connectDevice(circuitOutputs[0]!.name, circuitInputs[0]!.name);
+    }
+  };
+
+  const isClickable = wsState === "connected" && (connectedMidiOutput !== null || hasCircuit);
 
   return (
-    <div className="flex items-center gap-2 text-xs font-mono">
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={!isClickable}
+      title={
+        connectedMidiOutput
+          ? "Click to disconnect MIDI"
+          : hasCircuit
+            ? "Click to connect MIDI"
+            : undefined
+      }
+      className="flex items-center gap-2 text-xs font-mono disabled:cursor-default cursor-pointer"
+    >
       <span className={`w-2 h-2 rounded-full ${dot}`} />
-      <span className="text-gray-400 truncate max-w-48">{label}</span>
-    </div>
+      <span className="text-gray-400 truncate max-w-56">{label}</span>
+    </button>
   );
 }

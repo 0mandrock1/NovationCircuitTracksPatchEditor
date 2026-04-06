@@ -113,10 +113,10 @@ Bun.serve<WsData>({
       clients.add(ws);
       console.log(`[WS] Client connected (${clients.size} total)`);
 
-      // Send initial device list
+      // Send initial device list, then auto-connect to Circuit Tracks if found
       midiEngine
         .listDevices()
-        .then((devices) => {
+        .then(async (devices) => {
           const midiDevices: MidiDevice[] = [
             ...devices.inputs.map((p) => ({
               id: p.name,
@@ -131,10 +131,37 @@ Bun.serve<WsData>({
               isCircuitTracks: p.name.toLowerCase().includes("circuit"),
             })),
           ];
-          const event: MidiWsEvent = { type: "device.connected", devices: midiDevices };
-          ws.send(JSON.stringify(event));
+          ws.send(JSON.stringify({ type: "device.connected", devices: midiDevices } satisfies MidiWsEvent));
+
+          // Tell the new client about any already-established MIDI connection
+          if (midiEngine.isConnected && midiEngine.connectedOutputName && midiEngine.connectedInputName) {
+            ws.send(
+              JSON.stringify({
+                type: "midi.connected",
+                outputName: midiEngine.connectedOutputName,
+                inputName: midiEngine.connectedInputName,
+              } satisfies MidiWsEvent),
+            );
+            return;
+          }
+
+          // Auto-connect to Circuit Tracks if not yet connected
+          const circuitOut = devices.outputs.find((p) => p.name.toLowerCase().includes("circuit"));
+          const circuitIn = devices.inputs.find((p) => p.name.toLowerCase().includes("circuit"));
+          if (circuitOut && circuitIn) {
+            try {
+              await midiEngine.connect(circuitOut.name, circuitIn.name);
+              broadcast({
+                type: "midi.connected",
+                outputName: circuitOut.name,
+                inputName: circuitIn.name,
+              });
+            } catch (err) {
+              console.error(`[MIDI] Auto-connect failed:`, err);
+            }
+          }
         })
-        .catch(() => {});
+        .catch((err) => console.error("[WS] Failed to list devices on open:", err));
     },
 
     message(ws, rawMessage) {
@@ -160,31 +187,26 @@ Bun.serve<WsData>({
 function handleWsCommand(ws: BunWS, command: MidiWsCommand): void {
   switch (command.type) {
     case "device.connect": {
-      const portName = command.portName;
+      const { outputName, inputName } = command;
       midiEngine
-        .connect(portName, portName)
-        .then(async () => {
-          const devices = await midiEngine.listDevices();
-          const midiDevices: MidiDevice[] = [
-            ...devices.inputs.map((p) => ({
-              id: p.name,
-              name: p.name,
-              type: "input" as const,
-              isCircuitTracks: p.name.toLowerCase().includes("circuit"),
-            })),
-            ...devices.outputs.map((p) => ({
-              id: p.name,
-              name: p.name,
-              type: "output" as const,
-              isCircuitTracks: p.name.toLowerCase().includes("circuit"),
-            })),
-          ];
-          const event: MidiWsEvent = { type: "device.connected", devices: midiDevices };
-          ws.send(JSON.stringify(event));
+        .connect(outputName, inputName)
+        .then(() => {
+          broadcast({ type: "midi.connected", outputName, inputName });
         })
         .catch((err) => {
-          console.error(`[MIDI] Failed to connect to ${portName}:`, err);
-          // No "error" event in MidiWsEvent — log server-side only
+          console.error(`[MIDI] Failed to connect out=${outputName} in=${inputName}:`, err);
+        });
+      break;
+    }
+
+    case "device.disconnect": {
+      midiEngine
+        .disconnect()
+        .then(() => {
+          broadcast({ type: "midi.disconnected" });
+        })
+        .catch((err) => {
+          console.error("[MIDI] Disconnect error:", err);
         });
       break;
     }
