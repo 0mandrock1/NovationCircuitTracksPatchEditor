@@ -45,6 +45,16 @@
           "style": { "noNonNullAssertion": "off" }
         }
       }
+    },
+    {
+      "include": ["packages/ui/src/components/editor/*.tsx"],
+      "linter": {
+        "rules": {
+          "suspicious": {
+            "noArrayIndexKey": "off"
+          }
+        }
+      }
     }
   ]
 }

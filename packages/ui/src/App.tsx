@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { DeviceStatus } from "./components/common/DeviceStatus.js";
+import { PatchEditorView } from "./components/editor/PatchEditorView.js";
 
 type View = "patch" | "samples" | "library";
 
@@ -43,7 +44,7 @@ export function App() {
 
       {/* Main content area */}
       <main className="flex-1 overflow-hidden">
-        {activeView === "patch" && <PatchEditorPlaceholder />}
+        {activeView === "patch" && <PatchEditorView />}
         {activeView === "samples" && <SampleManagerPlaceholder />}
         {activeView === "library" && <LibraryPlaceholder />}
       </main>
@@ -52,20 +53,8 @@ export function App() {
 }
 
 // ---------------------------------------------------------------------------
-// Placeholder views (replaced in Phase 3/4/5)
+// Placeholder views
 // ---------------------------------------------------------------------------
-
-function PatchEditorPlaceholder() {
-  return (
-    <div className="flex items-center justify-center h-full">
-      <div className="text-center space-y-2">
-        <div className="text-4xl font-mono text-panel-highlight">◈</div>
-        <p className="text-gray-500 text-sm font-mono">Patch Editor</p>
-        <p className="text-gray-600 text-xs">Coming in Phase 3</p>
-      </div>
-    </div>
-  );
-}
 
 function SampleManagerPlaceholder() {
   return (
