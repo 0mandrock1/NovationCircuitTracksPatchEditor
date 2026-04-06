@@ -5,6 +5,7 @@
 
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { midiEngine } from "./midi/engine.js";
 
 const app = new Hono();
 
@@ -26,37 +27,55 @@ app.get("/api/health", (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Device endpoints (stubbed — full implementation in Phase 2)
+// Device endpoints
 // ---------------------------------------------------------------------------
 
-app.get("/api/devices", (c) => {
-  // TODO: return list of available MIDI ports via node-midi
-  return c.json({ devices: [] });
+app.get("/api/devices", async (c) => {
+  const devices = await midiEngine.listDevices();
+  return c.json({
+    devices,
+    connected: {
+      output: midiEngine.connectedOutputName,
+      input: midiEngine.connectedInputName,
+    },
+  });
 });
 
 app.post("/api/devices/connect", async (c) => {
-  // TODO: open MIDI port by name
-  const { portName } = await c.req.json<{ portName: string }>();
-  return c.json({ ok: true, portName });
+  const { outputName, inputName } = await c.req.json<{
+    outputName: string;
+    inputName: string;
+  }>();
+  try {
+    await midiEngine.connect(outputName, inputName);
+    return c.json({ ok: true, outputName, inputName });
+  } catch (err) {
+    return c.json({ ok: false, error: String(err) }, 500);
+  }
+});
+
+app.post("/api/devices/disconnect", async (c) => {
+  await midiEngine.disconnect();
+  return c.json({ ok: true });
 });
 
 // ---------------------------------------------------------------------------
-// Patch endpoints (stubbed — full implementation in Phase 2)
+// Patch endpoints (stubbed — SysEx send is via WebSocket in Phase 2)
 // ---------------------------------------------------------------------------
 
 app.get("/api/patches", (c) => {
-  // TODO: list saved .syx patch files from disk
+  // TODO Phase 3: list saved .syx patch files from disk
   return c.json({ patches: [] });
 });
 
 app.post("/api/patches/send", async (c) => {
-  // TODO: encode patch and send to device via SysEx
+  // TODO Phase 3: encode patch and send to device via SysEx
   const body = await c.req.json();
   return c.json({ ok: true, body });
 });
 
 app.post("/api/patches/request", async (c) => {
-  // TODO: send REQUEST_PATCH SysEx and await response
+  // TODO Phase 3: send REQUEST_PATCH SysEx and await response
   const body = await c.req.json();
   return c.json({ ok: true, body });
 });
@@ -66,13 +85,13 @@ app.post("/api/patches/request", async (c) => {
 // ---------------------------------------------------------------------------
 
 app.get("/api/samples", (c) => {
-  // TODO: list sample metadata
+  // TODO Phase 5: list sample metadata
   return c.json({ samples: [] });
 });
 
-app.post("/api/samples/prepare", async (c) => {
-  // TODO: accept multipart audio file, convert to 48kHz/16-bit/mono WAV
-  return c.json({ ok: true });
+app.post("/api/samples/prepare", async (_c) => {
+  // TODO Phase 5: accept multipart audio file, convert to 48kHz/16-bit/mono WAV
+  return _c.json({ ok: true });
 });
 
 export { app };
