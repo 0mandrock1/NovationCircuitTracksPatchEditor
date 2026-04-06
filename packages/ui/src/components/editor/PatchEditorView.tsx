@@ -98,16 +98,15 @@ export function PatchEditorView() {
         <button
           type="button"
           onClick={handlePreview}
-          disabled={!connectedOutputId}
-          title="Play a preview note (middle C)"
+          title={isPreviewing ? "Click to stop" : "Preview patch (Web Audio)"}
           className={[
             "px-3 py-1 text-[9px] font-mono rounded border transition-colors",
             isPreviewing
               ? "border-accent-synth text-accent-synth animate-pulse"
-              : "border-panel-border text-gray-400 hover:text-white hover:border-gray-500 disabled:opacity-40",
+              : "border-panel-border text-gray-400 hover:text-white hover:border-gray-500",
           ].join(" ")}
         >
-          ▶ PLAY
+          {isPreviewing ? "■ STOP" : "▶ PLAY"}
         </button>
         <button
           type="button"
