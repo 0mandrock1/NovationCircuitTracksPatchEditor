@@ -1,12 +1,14 @@
 # Dependencies
 node_modules/
 .bun/
+.bun-cache/
 
 # Build outputs
 dist/
 build/
 packages/*/dist/
 packages/*/build/
+out/
 
 # Environment
 .env
@@ -41,3 +43,5 @@ temp/
 # Audio processing temp files
 *.tmp.wav
 *.tmp.mp3
+
+
